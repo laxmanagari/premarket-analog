@@ -29,6 +29,15 @@ automatically falls back to `yfinance`. `screen`'s live quote always comes
 from `yfinance` directly (Alpha Vantage isn't used for that step) unless
 `--quotes-file` is given (see below).
 
+This is the **only** Alpha Vantage call the tool ever makes per ticker — RSI(14),
+SMA(50), SMA(200), and the rolling volume average are all computed locally in
+pandas from that single response's close/volume series (see `indicators.py`);
+there's no separate call to Alpha Vantage's own RSI/SMA technical-indicator
+endpoints. Every run prints the total count of real Alpha Vantage requests
+made to stderr, e.g. `Alpha Vantage API calls this run: 2`, so this stays easy
+to verify — it should always equal the number of tickers fetched via the REST
+path (0 if running on `--data-dir` or the `yfinance` fallback).
+
 ### Running where outbound network access is restricted
 
 Both subcommands accept `--data-dir DIR`: instead of any network call, price

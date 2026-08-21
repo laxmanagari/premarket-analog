@@ -17,7 +17,7 @@ import os
 import sys
 from typing import Any
 
-from .data import DataUnavailable, get_price_history
+from .data import DataUnavailable, get_api_call_count, get_price_history, reset_api_call_count
 from .pattern import PatternConfig, compute_indicators, forward_returns, scan, summarize_horizon
 from .report import build_report, build_screen_report, to_json, to_markdown, to_screen_markdown
 from .screener import screen_candidates
@@ -268,6 +268,7 @@ def _run_backtest(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     report = build_report(pattern.to_dict(), horizons, args.min_occurrences, results)
     rendered = to_json(report) if args.format == "json" else to_markdown(report)
     _write_output(rendered, args.output)
+    _print_api_call_count()
     return 0
 
 
@@ -289,7 +290,13 @@ def _run_screen(parser: argparse.ArgumentParser, args: argparse.Namespace) -> in
     report = build_screen_report(pattern.to_dict(), results)
     rendered = to_json(report) if args.format == "json" else to_screen_markdown(report)
     _write_output(rendered, args.output)
+    _print_api_call_count()
     return 0
+
+
+def _print_api_call_count() -> None:
+    count = get_api_call_count()
+    print(f"[premarket-analog] Alpha Vantage API calls this run: {count}", file=sys.stderr)
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -301,6 +308,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    reset_api_call_count()
     argv = _normalize_argv(sys.argv[1:] if argv is None else list(argv))
 
     parser = build_arg_parser()

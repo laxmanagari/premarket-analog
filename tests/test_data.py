@@ -7,8 +7,10 @@ from premarket_analog import data as data_module
 from premarket_analog.data import (
     AlphaVantageUnavailable,
     DataUnavailable,
+    get_api_call_count,
     get_price_history,
     load_alpha_vantage_file,
+    reset_api_call_count,
 )
 
 
@@ -153,3 +155,43 @@ def test_get_price_history_uses_data_dir_without_network(tmp_path, monkeypatch):
 def test_get_price_history_missing_data_dir_file_raises(tmp_path):
     with pytest.raises(DataUnavailable):
         get_price_history("MISSING", data_dir=str(tmp_path))
+
+
+def test_api_call_count_increments_on_real_request(monkeypatch):
+    reset_api_call_count()
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "Time Series (Daily)": {
+                    "2024-01-02": {
+                        "1. open": "1",
+                        "2. high": "1",
+                        "3. low": "1",
+                        "4. close": "1",
+                        "5. adjusted close": "1",
+                        "6. volume": "10",
+                    }
+                }
+            }
+
+    monkeypatch.setattr(data_module.requests, "get", lambda *a, **k: FakeResponse())
+    data_module._fetch_alpha_vantage("AAPL", "fake-key")
+    assert get_api_call_count() == 1
+
+    data_module._fetch_alpha_vantage("MSFT", "fake-key")
+    assert get_api_call_count() == 2
+
+
+def test_api_call_count_not_incremented_by_data_dir_or_yfinance(monkeypatch, tmp_path):
+    reset_api_call_count()
+    _write_daily_payload(tmp_path / "AAPL.json", adjusted=False)
+    get_price_history("AAPL", data_dir=str(tmp_path))
+    assert get_api_call_count() == 0
+
+    monkeypatch.setattr(data_module, "_fetch_yfinance", lambda ticker: _dummy_df())
+    get_price_history("AAPL", api_key=None)
+    assert get_api_call_count() == 0

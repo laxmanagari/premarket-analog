@@ -37,6 +37,21 @@ class PriceHistory:
     source: str  # "alpha_vantage", "alpha_vantage_file", or "yfinance"
 
 
+_api_call_count = 0
+
+
+def get_api_call_count() -> int:
+    """Total number of real Alpha Vantage REST requests made so far in this
+    process (a single TIME_SERIES_DAILY_ADJUSTED call per ticker -- loading
+    from --data-dir or falling back to yfinance never increments this)."""
+    return _api_call_count
+
+
+def reset_api_call_count() -> None:
+    global _api_call_count
+    _api_call_count = 0
+
+
 def _dataframe_from_daily_series(raw: dict) -> pd.DataFrame:
     """Parses the "Time Series (Daily)" object shared by Alpha Vantage's
     TIME_SERIES_DAILY and TIME_SERIES_DAILY_ADJUSTED endpoints. If adjusted-close
@@ -87,6 +102,7 @@ def _parse_alpha_vantage_payload(payload: dict) -> pd.DataFrame:
 
 
 def _fetch_alpha_vantage(ticker: str, api_key: str) -> pd.DataFrame:
+    global _api_call_count
     params = {
         "function": "TIME_SERIES_DAILY_ADJUSTED",
         "symbol": ticker,
@@ -94,6 +110,7 @@ def _fetch_alpha_vantage(ticker: str, api_key: str) -> pd.DataFrame:
         "apikey": api_key,
     }
     resp = requests.get(ALPHA_VANTAGE_URL, params=params, timeout=30)
+    _api_call_count += 1  # count the request itself, even if AV returns an error payload
     resp.raise_for_status()
     return _parse_alpha_vantage_payload(resp.json())
 
