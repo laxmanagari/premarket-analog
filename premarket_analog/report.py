@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from .screener import VOLUME_UNAVAILABLE_NOTE
+
 
 def build_report(
     pattern_dict: dict[str, Any],
@@ -127,3 +129,52 @@ def _render_comparison_table(results: list[dict[str, Any]], horizons: list[int])
 
 def to_json(report: dict[str, Any]) -> str:
     return json.dumps(report, indent=2, default=str)
+
+
+def build_screen_report(pattern_dict: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "pattern": pattern_dict,
+        "results": results,
+        "matched_tickers": [r["ticker"] for r in results if r.get("matched")],
+    }
+
+
+def to_screen_markdown(report: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# Live Premarket Screen")
+    lines.append("")
+    lines.append(f"Generated: {report['generated_at']}")
+    lines.append("")
+
+    p = report["pattern"]
+    lo, hi = p["rsi_range"]
+    lines.append("## Pattern Checked")
+    lines.append("")
+    lines.append(f"- Gap up ≥ **{p['gap_pct_min']}%** (current price vs. prior close)")
+    lines.append(f"- Prior-day RSI({p['rsi_period']}) in **[{lo}, {hi}]**")
+    lines.append("")
+
+    lines.append("| Ticker | Prior Close | Current | Gap % | Prior RSI | Match |")
+    lines.append("|---|---|---|---|---|---|")
+    for r in report["results"]:
+        if r.get("error"):
+            lines.append(f"| {r['ticker']} | — | — | — | — | error: {r['error']} |")
+            continue
+        rsi_str = f"{r['prior_rsi']:.1f}" if r["prior_rsi"] is not None else "n/a"
+        match_str = "✅" if r["matched"] else ""
+        lines.append(
+            f"| {r['ticker']} | {r['previous_close']:.2f} | {r['current_price']:.2f} | "
+            f"{r['gap_pct']:+.2f}% | {rsi_str} | {match_str} |"
+        )
+    lines.append("")
+
+    matched = report["matched_tickers"]
+    if matched:
+        lines.append(f"**Live matches:** {', '.join(matched)}")
+    else:
+        lines.append("**Live matches:** none of the candidates currently match the pattern.")
+    lines.append("")
+    lines.append(f"> ⚠️ {VOLUME_UNAVAILABLE_NOTE}")
+
+    return "\n".join(lines)

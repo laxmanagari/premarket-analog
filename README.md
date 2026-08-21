@@ -1,8 +1,17 @@
 # premarket-analog
 
-Backtests a premarket gap-up analog pattern against a ticker's (and optionally
-peers') full daily price history, and reports how the pattern has historically
-resolved at +1, +5, and +20 trading days.
+Two related tools in one CLI:
+
+- **`backtest`** — backtests a premarket gap-up analog pattern against a
+  ticker's (and optionally peers') full daily price history, and reports how
+  the pattern has historically resolved at +1, +5, and +20 trading days.
+- **`screen`** — checks a candidate list *right now*, live, ahead of today's
+  close: which of them currently have the gap % and prior-day RSI the pattern
+  calls for.
+
+The intended morning flow is `screen` first (which candidates match live
+today) piped into `backtest` (how has this exact setup played out historically
+for those tickers).
 
 ## Install
 
@@ -16,25 +25,50 @@ pip install -e .
 Set `ALPHAVANTAGE_API_KEY` (or pass `--api-key`) to pull daily adjusted OHLCV
 from Alpha Vantage's `TIME_SERIES_DAILY_ADJUSTED` endpoint. If no key is set,
 or Alpha Vantage returns an error/rate-limit/premium-only response, the tool
-automatically falls back to `yfinance`.
+automatically falls back to `yfinance`. `screen`'s live quote always comes
+from `yfinance` (Alpha Vantage isn't used for that step).
 
 ## Usage
+
+`backtest` is also the default subcommand, so `premarket-analog AAPL` and
+`premarket-analog backtest AAPL` are equivalent.
 
 Single ticker with peer comparison:
 
 ```bash
-premarket-analog AAPL --peers MSFT,GOOGL,AMZN --format markdown
+premarket-analog backtest AAPL --peers MSFT,GOOGL,AMZN --format markdown
 ```
 
 Piped from a screener (batch mode — no `--peers`, tickers come from stdin):
 
 ```bash
-printf "AAPL\nMSFT\nGOOGL\nAMZN\nNVDA\n" | premarket-analog --format json --output /tmp/morning_scan.json
+printf "AAPL\nMSFT\nGOOGL\nAMZN\nNVDA\n" | premarket-analog backtest --format json --output /tmp/morning_scan.json
 ```
 
 This is the shape an automated morning job would use: a screener emits its
 candidate list to stdout, it's piped straight in, and JSON comes out ready to
 be parsed or archived.
+
+### Live screen
+
+Check which of a candidate list currently matches the pattern, before today's
+close resolves anything:
+
+```bash
+premarket-analog screen AAPL MSFT NVDA
+# or piped in the same way as backtest:
+printf "AAPL\nMSFT\nNVDA\n" | premarket-analog screen --format json
+```
+
+`screen` only checks gap % and prior-day RSI — see **Notes / caveats** below
+for why volume isn't part of the live check. Chain the two together to go
+from "what's live right now" to "how has that setup historically resolved":
+
+```bash
+premarket-analog screen AAPL MSFT NVDA --format json \
+  | jq -r '.matched_tickers[]' \
+  | premarket-analog backtest --format markdown
+```
 
 ### Custom pattern
 
@@ -63,11 +97,18 @@ or supply a JSON file via `--pattern-config`:
 
 ## Notes / caveats
 
-- Volume confirmation uses the signal day's *full* daily volume vs. its
-  trailing average — a proxy, since daily bars don't expose true premarket-only
-  volume.
-- Occurrence counts below ~10 per horizon are flagged explicitly in the report
-  as statistically thin.
-- Every report states the exact date range of history scanned, since a pattern
-  that worked in one regime (e.g. 2021-2023) is not guaranteed to hold in
-  another.
+- In `backtest`, volume confirmation uses the signal day's *full* daily volume
+  vs. its trailing average — a proxy, since daily bars don't expose true
+  premarket-only volume.
+- `screen` deliberately does not check volume at all. Free live-quote data
+  (`yfinance`'s `fast_info`) only exposes the most recently *completed*
+  session's volume, not volume accumulated so far in the current session —
+  during premarket it would just restate yesterday's already-known volume, so
+  a "volume ratio" computed from it would be misleading rather than merely
+  imprecise. `screen` checks gap % and prior-day RSI only, and says so
+  explicitly in its output.
+- Occurrence counts below ~10 per horizon are flagged explicitly in the
+  `backtest` report as statistically thin.
+- Every `backtest` report states the exact date range of history scanned,
+  since a pattern that worked in one regime (e.g. 2021-2023) is not guaranteed
+  to hold in another.
