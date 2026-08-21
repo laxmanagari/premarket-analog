@@ -1,6 +1,6 @@
 # premarket-analog
 
-Two related tools in one CLI:
+Three related tools in one CLI:
 
 - **`backtest`** — backtests a premarket gap-up analog pattern against a
   ticker's (and optionally peers') full daily price history, and reports how
@@ -8,10 +8,17 @@ Two related tools in one CLI:
 - **`screen`** — checks a candidate list *right now*, live, ahead of today's
   close: which of them currently have the gap % and prior-day RSI the pattern
   calls for.
+- **`pool`** — backtests the pattern across *many* tickers and pools every
+  match into one combined distribution. The pattern (gap %, RSI band, volume
+  multiple) is pure math, not tied to any one stock, so this trades
+  ticker-specificity for sample size — useful when a candidate (e.g. an
+  obscure daily gainer) has too little of its own history to say much on its
+  own; see **Notes / caveats** for what pooling does and doesn't tell you.
 
 The intended morning flow is `screen` first (which candidates match live
 today) piped into `backtest` (how has this exact setup played out historically
-for those tickers).
+for those specific tickers) — and `pool` as a separate, broader check on how
+the setup resolves in general, independent of which ticker triggered it.
 
 ## Install
 
@@ -100,6 +107,29 @@ premarket-analog screen AAPL MSFT NVDA --format json \
   | premarket-analog backtest --format markdown
 ```
 
+### Pooled cross-ticker backtest
+
+Pool matches across many tickers into one combined distribution, instead of
+per-ticker stats:
+
+```bash
+# Explicit universe
+premarket-analog pool AAPL MSFT GOOGL AMZN NVDA --format markdown
+
+# Piped, same as backtest/screen
+printf "AAPL\nMSFT\nGOOGL\n" | premarket-analog pool --format json
+
+# No tickers given and nothing piped: falls back to a built-in curated
+# universe of ~80 liquid large/mid-cap tickers
+premarket-analog pool --format markdown
+```
+
+Each ticker still gets the exact same per-ticker scan as `backtest` (same
+`compute_indicators`/`scan`/`forward_returns`); `pool` just merges every
+ticker's matches into one set of per-horizon stats instead of reporting them
+separately, and shows how many different tickers contributed to each
+horizon's count.
+
 ### Custom pattern
 
 Override any of the default thresholds:
@@ -142,3 +172,10 @@ or supply a JSON file via `--pattern-config`:
 - Every `backtest` report states the exact date range of history scanned,
   since a pattern that worked in one regime (e.g. 2021-2023) is not guaranteed
   to hold in another.
+- `pool`'s bigger sample size is a trade against ticker-specificity: it
+  answers "how does this exact setup resolve, averaged across many different
+  stocks," not "how does *this* stock behave." A large pooled sample also
+  mixes different sectors, volatility regimes, and market conditions across
+  the scanned history — it doesn't mean the edge transfers uniformly to any
+  one ticker today. The report says this explicitly and lists how many
+  distinct tickers contributed to each horizon's count.

@@ -8,6 +8,7 @@ from premarket_analog.pattern import (
     PatternConfig,
     compute_indicators,
     forward_returns,
+    pool_returns,
     scan,
     summarize_horizon,
 )
@@ -97,6 +98,32 @@ def test_summarize_horizon_empty():
     assert stats["count"] == 0
     assert stats["win_rate_pct"] is None
     assert stats["distribution"] is None
+
+
+def test_pool_returns_merges_and_tags_ticker():
+    per_ticker = [
+        ("AAPL", {1: [{"date": "2024-01-02", "return_pct": 1.0}], 5: []}),
+        ("MSFT", {1: [{"date": "2024-01-03", "return_pct": 2.0}], 5: [{"date": "2024-01-03", "return_pct": 3.0}]}),
+    ]
+    pooled = pool_returns(per_ticker, horizons=(1, 5))
+
+    assert len(pooled[1]) == 2
+    assert {e["ticker"] for e in pooled[1]} == {"AAPL", "MSFT"}
+    assert pooled[1][0]["return_pct"] == 1.0
+    assert len(pooled[5]) == 1
+    assert pooled[5][0]["ticker"] == "MSFT"
+
+
+def test_pool_returns_empty_input():
+    pooled = pool_returns([], horizons=(1, 5, 20))
+    assert pooled == {1: [], 5: [], 20: []}
+
+
+def test_pool_returns_missing_horizon_in_source_defaults_empty():
+    per_ticker = [("AAPL", {1: [{"date": "d", "return_pct": 1.0}]})]  # no key for horizon 5
+    pooled = pool_returns(per_ticker, horizons=(1, 5))
+    assert len(pooled[1]) == 1
+    assert pooled[5] == []
 
 
 def test_pattern_config_layering(tmp_path):

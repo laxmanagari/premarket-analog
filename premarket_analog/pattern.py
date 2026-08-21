@@ -143,6 +143,24 @@ def forward_returns(
     return returns, excluded
 
 
+def pool_returns(
+    per_ticker_returns: list[tuple[str, dict[int, list[dict[str, Any]]]]],
+    horizons: tuple[int, ...],
+) -> dict[int, list[dict[str, Any]]]:
+    """Merges forward-return matches from many tickers into one combined
+    per-horizon pool, tagging each entry with the ticker it came from. The
+    pattern definition is the same math regardless of which ticker it's
+    evaluated against, so pooling gives a statistically meaningful sample
+    even when any single ticker (especially a thin, obscure one) doesn't
+    have enough of its own history to say much on its own."""
+    pooled: dict[int, list[dict[str, Any]]] = {h: [] for h in horizons}
+    for ticker, returns_by_horizon in per_ticker_returns:
+        for h in horizons:
+            for entry in returns_by_horizon.get(h, []):
+                pooled[h].append({**entry, "ticker": ticker})
+    return pooled
+
+
 def summarize_horizon(returns_list: list[dict[str, Any]]) -> dict[str, Any]:
     """Occurrence count, win rate, average/median return, and the return
     distribution for one horizon's set of matched-and-resolved returns."""

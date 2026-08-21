@@ -178,3 +178,104 @@ def to_screen_markdown(report: dict[str, Any]) -> str:
     lines.append(f"> ⚠️ {VOLUME_UNAVAILABLE_NOTE}")
 
     return "\n".join(lines)
+
+
+def build_pool_report(
+    pattern_dict: dict[str, Any],
+    horizons: tuple[int, ...],
+    min_occurrences: int,
+    universe_size: int,
+    tickers_used: list[str],
+    tickers_errored: list[dict[str, Any]],
+    horizon_stats: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "pattern": pattern_dict,
+        "horizons": list(horizons),
+        "min_occurrences_for_significance": min_occurrences,
+        "universe_size": universe_size,
+        "tickers_used": tickers_used,
+        "tickers_errored": tickers_errored,
+        "horizons_pooled": horizon_stats,
+    }
+
+
+def _ticker_contribution_counts(returns_list: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in returns_list:
+        counts[entry["ticker"]] = counts.get(entry["ticker"], 0) + 1
+    return counts
+
+
+def to_pool_markdown(report: dict[str, Any], pooled_returns: dict[int, list[dict[str, Any]]]) -> str:
+    lines: list[str] = []
+    lines.append("# Pooled Cross-Ticker Analog Scan")
+    lines.append("")
+    lines.append(f"Generated: {report['generated_at']}")
+    lines.append("")
+
+    p = report["pattern"]
+    lo, hi = p["rsi_range"]
+    lines.append("## Pattern Definition")
+    lines.append("")
+    lines.append(f"- Gap up ≥ **{p['gap_pct_min']}%** (day's open vs. prior close)")
+    lines.append(f"- Prior-day RSI({p['rsi_period']}) in **[{lo}, {hi}]**")
+    lines.append(
+        f"- Day's volume ≥ **{p['volume_multiple']}×** its trailing "
+        f"{p['volume_window']}-day average"
+    )
+    lines.append(
+        f"- Forward horizons: {', '.join(str(h) + 'd' for h in report['horizons'])} "
+        "trading days, measured close-to-close from the signal day"
+    )
+    lines.append("")
+
+    lines.append("## Universe")
+    lines.append("")
+    lines.append(
+        f"- Scanned **{report['universe_size']}** tickers; "
+        f"**{len(report['tickers_used'])}** returned usable history"
+    )
+    if report["tickers_errored"]:
+        errored = ", ".join(f"{e['ticker']} ({e['error']})" for e in report["tickers_errored"])
+        lines.append(f"- Excluded: {errored}")
+    lines.append("")
+
+    lines.append("## Pooled Results")
+    lines.append("")
+    lines.append(
+        "| Horizon | Count | Win Rate | Avg Return | Median Return | P25 | P75 | Std Dev | Tickers Contributing |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|")
+    for h in report["horizons"]:
+        stats = report["horizons_pooled"][h]
+        n_contributing = len(_ticker_contribution_counts(pooled_returns.get(h, [])))
+        if stats["count"] == 0:
+            lines.append(f"| +{h}d | 0 | n/a | n/a | n/a | n/a | n/a | n/a | 0 |")
+            continue
+        d = stats["distribution"]
+        lines.append(
+            f"| +{h}d | {stats['count']} | {stats['win_rate_pct']:.1f}% | "
+            f"{_fmt_pct(stats['avg_return_pct'])} | {_fmt_pct(stats['median_return_pct'])} | "
+            f"{_fmt_pct(d['p25_pct'])} | {_fmt_pct(d['p75_pct'])} | {d['std_dev_pct']:.2f}pp | "
+            f"{n_contributing} |"
+        )
+    lines.append("")
+
+    if report["min_occurrences_for_significance"] and any(
+        report["horizons_pooled"][h]["count"] < report["min_occurrences_for_significance"] for h in report["horizons"]
+    ):
+        lines.append(
+            f"> ⚠️ At least one horizon has fewer than {report['min_occurrences_for_significance']} "
+            "pooled occurrences -- treat as statistically thin even after pooling."
+        )
+    lines.append(
+        "> ⚠️ Pooling trades ticker-specificity for sample size: this is \"how does this exact "
+        "gap/RSI/volume setup resolve, averaged across many different stocks,\" not a claim that "
+        "any single name in the pool behaves like the average. A large pooled sample also mixes "
+        "different sectors, volatility regimes, and market conditions across the scanned history -- "
+        "it does not mean the edge transfers uniformly to any one ticker today."
+    )
+
+    return "\n".join(lines)

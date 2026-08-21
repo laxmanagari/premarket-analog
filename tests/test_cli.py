@@ -1,4 +1,8 @@
-from premarket_analog.cli import _normalize_argv, _parse_tickers, build_arg_parser
+import pandas as pd
+
+from premarket_analog.cli import _normalize_argv, _parse_tickers, _scan_ticker_for_pool, build_arg_parser
+from premarket_analog.data import DataUnavailable, PriceHistory
+from premarket_analog.pattern import PatternConfig
 
 
 def test_parse_tickers_handles_mixed_separators_case_and_dupes():
@@ -48,6 +52,62 @@ def test_data_dir_defaults_to_none():
     parser = build_arg_parser()
     args = parser.parse_args(["backtest", "AAPL"])
     assert args.data_dir is None
+
+
+def test_pool_subcommand_parses_explicit_tickers():
+    parser = build_arg_parser()
+    args = parser.parse_args(["pool", "AAPL", "MSFT", "GOOGL"])
+    assert args.command == "pool"
+    assert args.tickers == ["AAPL", "MSFT", "GOOGL"]
+
+
+def test_pool_subcommand_tickers_optional():
+    parser = build_arg_parser()
+    args = parser.parse_args(["pool"])
+    assert args.tickers == []
+
+
+def test_pool_subcommand_parses_pattern_and_output_args():
+    parser = build_arg_parser()
+    args = parser.parse_args(["pool", "AAPL", "--gap-pct-min", "3", "--format", "json"])
+    assert args.gap_pct_min == 3.0
+    assert args.format == "json"
+
+
+def test_scan_ticker_for_pool_returns_error_on_missing_data(monkeypatch):
+    import premarket_analog.cli as cli_module
+
+    def failing(ticker, api_key=None, data_dir=None):
+        raise DataUnavailable("no data")
+
+    monkeypatch.setattr(cli_module, "get_price_history", failing)
+    returns, error = _scan_ticker_for_pool("BADTICKER", PatternConfig(), (1, 5, 20), None, None)
+    assert returns is None
+    assert error == "no data"
+
+
+def test_scan_ticker_for_pool_returns_data_on_success(monkeypatch):
+    import premarket_analog.cli as cli_module
+
+    idx = pd.bdate_range("2024-01-02", periods=40)
+    df = pd.DataFrame(
+        {
+            "open": [100.0] * 40,
+            "high": [101.0] * 40,
+            "low": [99.0] * 40,
+            "close": [100.0] * 40,
+            "volume": [1000.0] * 40,
+        },
+        index=idx,
+    )
+    monkeypatch.setattr(
+        cli_module, "get_price_history", lambda ticker, api_key=None, data_dir=None: PriceHistory(
+            ticker=ticker, df=df, source="yfinance"
+        )
+    )
+    returns, error = _scan_ticker_for_pool("AAPL", PatternConfig(), (1, 5, 20), None, None)
+    assert error is None
+    assert set(returns.keys()) == {1, 5, 20}
 
 
 def test_normalize_argv_defaults_bare_ticker_to_backtest():

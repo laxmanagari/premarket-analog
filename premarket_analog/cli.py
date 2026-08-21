@@ -1,10 +1,13 @@
 """premarket-analog: scan historical price action for a premarket-gap analog
-pattern, and optionally check candidates against it live before today's close.
+pattern, optionally check candidates against it live before today's close, and
+optionally pool matches across many tickers into one combined distribution.
 
 Usage:
     premarket-analog backtest AAPL --peers MSFT,GOOGL,AMZN
     printf "AAPL\\nMSFT\\nGOOGL\\nAMZN\\nNVDA\\n" | premarket-analog backtest --format json
     printf "AAPL\\nMSFT\\nGOOGL\\n" | premarket-analog screen
+    premarket-analog pool AAPL MSFT GOOGL AMZN NVDA
+    premarket-analog pool  # falls back to a built-in curated universe
 
 `backtest` is also the default subcommand: `premarket-analog AAPL ...` still
 works without typing `backtest` explicitly.
@@ -18,12 +21,21 @@ import sys
 from typing import Any
 
 from .data import DataUnavailable, get_api_call_count, get_price_history, reset_api_call_count
-from .pattern import PatternConfig, compute_indicators, forward_returns, scan, summarize_horizon
-from .report import build_report, build_screen_report, to_json, to_markdown, to_screen_markdown
+from .pattern import PatternConfig, compute_indicators, forward_returns, pool_returns, scan, summarize_horizon
+from .report import (
+    build_pool_report,
+    build_report,
+    build_screen_report,
+    to_json,
+    to_markdown,
+    to_pool_markdown,
+    to_screen_markdown,
+)
 from .screener import screen_candidates
+from .universe import DEFAULT_UNIVERSE
 
 API_KEY_ENV_VAR = "ALPHAVANTAGE_API_KEY"
-SUBCOMMANDS = ("backtest", "screen")
+SUBCOMMANDS = ("backtest", "screen", "pool")
 
 
 def _parse_tickers(raw: str) -> list[str]:
@@ -135,6 +147,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     _add_output_args(screen)
 
+    pool = subparsers.add_parser(
+        "pool",
+        help="Backtest the pattern across many tickers and pool all matches into one combined "
+        "distribution -- the pattern is the same math regardless of ticker, so pooling gives a "
+        "statistically meaningful sample even when any single name has too little history of its own.",
+    )
+    pool.add_argument(
+        "tickers",
+        nargs="*",
+        help="Tickers to pool across. If omitted, read from stdin; if stdin is empty too, falls "
+        f"back to a built-in curated universe of {len(DEFAULT_UNIVERSE)} liquid large/mid-cap tickers.",
+    )
+    _add_pattern_args(pool)
+    pool.add_argument(
+        "--horizons", default="1,5,20", help="Comma-separated forward-return horizons in trading days (default 1,5,20)."
+    )
+    pool.add_argument(
+        "--min-occurrences",
+        type=int,
+        default=10,
+        help="Pooled occurrence count below which a horizon's stats are flagged as statistically thin (default 10).",
+    )
+    _add_data_source_args(pool)
+    _add_output_args(pool)
+
     return parser
 
 
@@ -203,6 +240,32 @@ def _analyze_ticker(
         "horizons": horizon_stats,
         "warnings": warnings,
     }
+
+
+def _scan_ticker_for_pool(
+    ticker: str,
+    pattern: PatternConfig,
+    horizons: tuple[int, ...],
+    api_key: str | None,
+    data_dir: str | None,
+) -> tuple[dict[int, list[dict[str, Any]]] | None, str | None]:
+    """Returns (returns_by_horizon, None) on success or (None, error_message) on
+    failure -- used by `pool`, which only needs the raw per-horizon matches to
+    merge across tickers, not a full per-ticker report."""
+    try:
+        history = get_price_history(ticker, api_key=api_key, data_dir=data_dir)
+    except DataUnavailable as exc:
+        return None, str(exc)
+
+    df = history.df
+    min_bars_needed = max(pattern.rsi_period, pattern.volume_window) + 2
+    if len(df) < min_bars_needed:
+        return None, f"only {len(df)} bars of history available, need at least {min_bars_needed}"
+
+    enriched = compute_indicators(df, pattern)
+    matches = scan(enriched, pattern)
+    returns_by_horizon, _excluded = forward_returns(enriched, matches, horizons)
+    return returns_by_horizon, None
 
 
 def _build_pattern(parser: argparse.ArgumentParser, args: argparse.Namespace) -> PatternConfig:
@@ -294,6 +357,50 @@ def _run_screen(parser: argparse.ArgumentParser, args: argparse.Namespace) -> in
     return 0
 
 
+def _run_pool(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    pattern = _build_pattern(parser, args)
+
+    try:
+        horizons = tuple(int(h.strip()) for h in args.horizons.split(",") if h.strip())
+    except ValueError:
+        parser.error(f"invalid --horizons value: {args.horizons!r}")
+        return 2
+
+    api_key = args.api_key or os.environ.get(API_KEY_ENV_VAR)
+
+    if args.tickers:
+        tickers = [t.upper() for t in args.tickers]
+    else:
+        stdin_tickers = _read_stdin_tickers()
+        tickers = stdin_tickers if stdin_tickers else list(DEFAULT_UNIVERSE)
+
+    per_ticker_returns: list[tuple[str, dict[int, list[dict[str, Any]]]]] = []
+    tickers_errored: list[dict[str, Any]] = []
+    for ticker in tickers:
+        returns_by_horizon, error = _scan_ticker_for_pool(ticker, pattern, horizons, api_key, args.data_dir)
+        if error is not None:
+            tickers_errored.append({"ticker": ticker, "error": error})
+        else:
+            per_ticker_returns.append((ticker, returns_by_horizon))
+
+    pooled = pool_returns(per_ticker_returns, horizons)
+    horizon_stats = {h: summarize_horizon(pooled[h]) for h in horizons}
+
+    report = build_pool_report(
+        pattern.to_dict(),
+        horizons,
+        args.min_occurrences,
+        len(tickers),
+        [t for t, _ in per_ticker_returns],
+        tickers_errored,
+        horizon_stats,
+    )
+    rendered = to_json(report) if args.format == "json" else to_pool_markdown(report, pooled)
+    _write_output(rendered, args.output)
+    _print_api_call_count()
+    return 0
+
+
 def _print_api_call_count() -> None:
     count = get_api_call_count()
     print(f"[premarket-analog] Alpha Vantage API calls this run: {count}", file=sys.stderr)
@@ -316,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "screen":
         return _run_screen(parser, args)
+    if args.command == "pool":
+        return _run_pool(parser, args)
     return _run_backtest(parser, args)
 
 
