@@ -86,6 +86,14 @@ This is the shape an automated morning job would use: a screener emits its
 candidate list to stdout, it's piped straight in, and JSON comes out ready to
 be parsed or archived.
 
+Markdown reports (`backtest` and `pool`) lead with a color-coded **Summary**
+table before the detailed per-horizon breakdown: 🟢/🟡/🔴 for a solid, mixed,
+or weak/negative historical read, plus a compact win-rate bar. A thin sample
+is always ⚪, regardless of how good the raw numbers look — too few
+occurrences to call it a real edge, not something worth painting green. JSON
+output is unaffected (still just the numbers); the color coding is a markdown
+presentation layer only.
+
 ### Live screen
 
 Check which of a candidate list currently matches the pattern, before today's

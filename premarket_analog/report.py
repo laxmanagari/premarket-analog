@@ -30,6 +30,33 @@ def _fmt_pct(value: float | None, decimals: int = 2) -> str:
     return f"{value:+.{decimals}f}%"
 
 
+def _verdict(stats: dict[str, Any], min_occurrences: int) -> str:
+    """A quick color-coded read on one horizon's historical performance. A
+    thin sample is always ⚪ regardless of how good the numbers look -- too
+    few occurrences to call it a real edge one way or the other, not a
+    result worth painting green."""
+    if stats["count"] < min_occurrences:
+        return "⚪"
+    win = stats["win_rate_pct"]
+    avg = stats["avg_return_pct"]
+    if avg > 0 and win >= 55:
+        return "🟢"
+    if avg < 0 or win <= 45:
+        return "🔴"
+    return "🟡"
+
+
+def _bar(pct: float | None, width: int = 10) -> str:
+    """Compact win-rate bar, e.g. 58.9% -> `█████░░░░░`."""
+    if pct is None:
+        return "░" * width
+    filled = round(width * max(0.0, min(100.0, pct)) / 100)
+    return "█" * filled + "░" * (width - filled)
+
+
+_LEGEND = "🟢 solid historical edge  🟡 mixed  🔴 weak/negative  ⚪ sample too thin to call"
+
+
 def to_markdown(report: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append("# Premarket Analog Scan Report")
@@ -53,6 +80,10 @@ def to_markdown(report: dict[str, Any]) -> str:
     )
     lines.append("")
 
+    lines.extend(
+        _render_summary(report["results"], report["horizons"], report["min_occurrences_for_significance"])
+    )
+
     for entry in report["results"]:
         lines.extend(_render_ticker_section(entry, report["min_occurrences_for_significance"]))
 
@@ -60,6 +91,32 @@ def to_markdown(report: dict[str, Any]) -> str:
         lines.extend(_render_comparison_table(report["results"], report["horizons"]))
 
     return "\n".join(lines)
+
+
+def _render_summary(results: list[dict[str, Any]], horizons: list[int], min_occurrences: int) -> list[str]:
+    lines = ["## Summary", ""]
+    lines.append("| Ticker | " + " | ".join(f"+{h}d" for h in horizons) + " |")
+    lines.append("|---|" + "---|" * len(horizons))
+    for entry in results:
+        if entry.get("error"):
+            lines.append(f"| {entry['ticker']} | " + " | ".join(["error"] * len(horizons)) + " |")
+            continue
+        cells = []
+        for h in horizons:
+            stats = entry["horizons"].get(h) or entry["horizons"].get(str(h))
+            if not stats or stats["count"] == 0:
+                cells.append("⚪ n/a")
+                continue
+            emoji = _verdict(stats, min_occurrences)
+            cells.append(
+                f"{emoji} {_fmt_pct(stats['avg_return_pct'])} "
+                f"`{_bar(stats['win_rate_pct'])}` {stats['win_rate_pct']:.0f}%"
+            )
+        lines.append(f"| {entry['ticker']} | " + " | ".join(cells) + " |")
+    lines.append("")
+    lines.append(_LEGEND)
+    lines.append("")
+    return lines
 
 
 def _render_ticker_section(entry: dict[str, Any], min_occurrences: int) -> list[str]:
@@ -248,19 +305,23 @@ def to_pool_markdown(report: dict[str, Any], pooled_returns: dict[int, list[dict
         "| Horizon | Count | Win Rate | Avg Return | Median Return | P25 | P75 | Std Dev | Tickers Contributing |"
     )
     lines.append("|---|---|---|---|---|---|---|---|---|")
+    min_occurrences = report["min_occurrences_for_significance"]
     for h in report["horizons"]:
         stats = report["horizons_pooled"][h]
         n_contributing = len(_ticker_contribution_counts(pooled_returns.get(h, [])))
         if stats["count"] == 0:
-            lines.append(f"| +{h}d | 0 | n/a | n/a | n/a | n/a | n/a | n/a | 0 |")
+            lines.append(f"| +{h}d | 0 | ⚪ n/a | n/a | n/a | n/a | n/a | n/a | 0 |")
             continue
         d = stats["distribution"]
+        emoji = _verdict(stats, min_occurrences)
         lines.append(
-            f"| +{h}d | {stats['count']} | {stats['win_rate_pct']:.1f}% | "
+            f"| +{h}d | {stats['count']} | {emoji} `{_bar(stats['win_rate_pct'])}` {stats['win_rate_pct']:.1f}% | "
             f"{_fmt_pct(stats['avg_return_pct'])} | {_fmt_pct(stats['median_return_pct'])} | "
             f"{_fmt_pct(d['p25_pct'])} | {_fmt_pct(d['p75_pct'])} | {d['std_dev_pct']:.2f}pp | "
             f"{n_contributing} |"
         )
+    lines.append("")
+    lines.append(_LEGEND)
     lines.append("")
 
     if report["min_occurrences_for_significance"] and any(
