@@ -59,10 +59,21 @@ def _add_pattern_args(parser: argparse.ArgumentParser) -> None:
 def _add_output_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     parser.add_argument("--output", help="Write the report to this file instead of stdout.")
+
+
+def _add_data_source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--api-key",
         help=f"Alpha Vantage API key. Defaults to the {API_KEY_ENV_VAR} env var; "
         "falls back to yfinance if unset or unavailable.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        help="Directory of pre-fetched Alpha Vantage TIME_SERIES_DAILY(_ADJUSTED) JSON "
+        "files, one per ticker as {data_dir}/{TICKER}.json. When set, price history is "
+        "loaded directly from these files instead of any network call -- for "
+        "environments (e.g. a sandboxed cloud agent) where an MCP connector can reach "
+        "Alpha Vantage but this process can't reach the open internet.",
     )
 
 
@@ -100,6 +111,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=10,
         help="Occurrence count below which a horizon's stats are flagged as statistically thin (default 10).",
     )
+    _add_data_source_args(backtest)
     _add_output_args(backtest)
 
     screen = subparsers.add_parser(
@@ -113,6 +125,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Candidate tickers to check. If omitted, read from stdin (newline- or comma-separated).",
     )
     _add_pattern_args(screen)
+    _add_data_source_args(screen)
+    screen.add_argument(
+        "--quotes-file",
+        help="Path to a JSON manifest of pre-fetched live quotes: "
+        '{"TICKER": {"price": ..., "previous_close": ...}, ...}. When set, live quotes '
+        "are loaded from this file instead of yfinance -- for environments where this "
+        "process can't reach yfinance directly (pair with --data-dir).",
+    )
     _add_output_args(screen)
 
     return parser
@@ -125,14 +145,19 @@ def _analyze_ticker(
     horizons: tuple[int, ...],
     min_occurrences: int,
     api_key: str | None,
+    data_dir: str | None = None,
 ) -> dict[str, Any]:
     try:
-        history = get_price_history(ticker, api_key=api_key)
+        history = get_price_history(ticker, api_key=api_key, data_dir=data_dir)
     except DataUnavailable as exc:
         return {"ticker": ticker, "role": role, "error": str(exc)}
 
     df = history.df
-    min_bars_needed = max(pattern.sma_periods, default=0)
+    # Only RSI/volume need enough bars to be meaningful; sma50/sma200 are
+    # informational columns that are simply NaN until enough history accumulates,
+    # so they shouldn't gate whether a scan can run at all (e.g. a --data-dir file
+    # with only ~100 days, which is all Alpha Vantage's free "compact" tier gives).
+    min_bars_needed = max(pattern.rsi_period, pattern.volume_window) + 2
     if len(df) < min_bars_needed:
         return {
             "ticker": ticker,
@@ -236,7 +261,7 @@ def _run_backtest(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         jobs = [(t, "batch") for t in stdin_tickers]
 
     results = [
-        _analyze_ticker(ticker, role, pattern, horizons, args.min_occurrences, api_key)
+        _analyze_ticker(ticker, role, pattern, horizons, args.min_occurrences, api_key, args.data_dir)
         for ticker, role in jobs
     ]
 
@@ -258,7 +283,9 @@ def _run_screen(parser: argparse.ArgumentParser, args: argparse.Namespace) -> in
         )
         return 2
 
-    results = screen_candidates(tickers, pattern, api_key=api_key)
+    results = screen_candidates(
+        tickers, pattern, api_key=api_key, data_dir=args.data_dir, quotes_file=args.quotes_file
+    )
     report = build_screen_report(pattern.to_dict(), results)
     rendered = to_json(report) if args.format == "json" else to_screen_markdown(report)
     _write_output(rendered, args.output)

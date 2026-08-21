@@ -26,7 +26,28 @@ Set `ALPHAVANTAGE_API_KEY` (or pass `--api-key`) to pull daily adjusted OHLCV
 from Alpha Vantage's `TIME_SERIES_DAILY_ADJUSTED` endpoint. If no key is set,
 or Alpha Vantage returns an error/rate-limit/premium-only response, the tool
 automatically falls back to `yfinance`. `screen`'s live quote always comes
-from `yfinance` (Alpha Vantage isn't used for that step).
+from `yfinance` directly (Alpha Vantage isn't used for that step) unless
+`--quotes-file` is given (see below).
+
+### Running where outbound network access is restricted
+
+Both subcommands accept `--data-dir DIR`: instead of any network call, price
+history is loaded from `{DIR}/{TICKER}.json` — a file containing Alpha
+Vantage's raw `TIME_SERIES_DAILY` or `TIME_SERIES_DAILY_ADJUSTED` JSON
+response for that ticker. `screen` additionally accepts `--quotes-file PATH`,
+a JSON manifest of pre-fetched live quotes:
+`{"AAPL": {"price": 190.5, "previous_close": 188.0}, ...}`.
+
+This exists for sandboxed environments (e.g. a Claude Code cloud routine) that
+can reach Alpha Vantage through an MCP connector but can't reach the open
+internet directly (yfinance, or Alpha Vantage's own REST API) — something
+else fetches the data via the MCP tools and saves it to these files first,
+and this CLI does the RSI/pattern/backtest math against them with zero
+outbound calls of its own. Alpha Vantage's free tier only exposes `compact`
+history (~100 trading days) through most MCP-connected accounts, so a
+`--data-dir`-driven `backtest` will usually have a short lookback window —
+expect the thin-sample warning to fire routinely there; it's telling the
+truth about the data available, not misbehaving.
 
 ## Usage
 

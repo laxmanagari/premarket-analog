@@ -29,6 +29,27 @@ def test_screen_subcommand_parses_tickers():
     assert args.tickers == ["AAPL", "MSFT"]
 
 
+def test_backtest_subcommand_parses_data_dir():
+    parser = build_arg_parser()
+    args = parser.parse_args(["backtest", "AAPL", "--data-dir", "/tmp/av"])
+    assert args.data_dir == "/tmp/av"
+
+
+def test_screen_subcommand_parses_data_dir_and_quotes_file():
+    parser = build_arg_parser()
+    args = parser.parse_args(
+        ["screen", "AAPL", "--data-dir", "/tmp/av", "--quotes-file", "/tmp/av/quotes.json"]
+    )
+    assert args.data_dir == "/tmp/av"
+    assert args.quotes_file == "/tmp/av/quotes.json"
+
+
+def test_data_dir_defaults_to_none():
+    parser = build_arg_parser()
+    args = parser.parse_args(["backtest", "AAPL"])
+    assert args.data_dir is None
+
+
 def test_normalize_argv_defaults_bare_ticker_to_backtest():
     assert _normalize_argv(["AAPL", "--peers", "MSFT"]) == ["backtest", "AAPL", "--peers", "MSFT"]
 

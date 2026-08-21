@@ -4,17 +4,19 @@ close. This is distinct from pattern.scan(), which backtests the pattern
 against closed historical days.
 
 Volume confirmation is intentionally excluded here: free live-quote data
-(yfinance's fast_info) only exposes the most recently *completed* session's
-volume, not volume accumulated so far in the current session, so a "volume
-ratio" computed from it would just restate yesterday's already-known volume
-rather than measure today's premarket activity. The historical backtest
-(pattern.py) still applies the volume condition properly, since full daily
-bars are legitimate there.
+(yfinance's fast_info, or Alpha Vantage's GLOBAL_QUOTE) only exposes the most
+recently *completed* session's volume, not volume accumulated so far in the
+current session, so a "volume ratio" computed from it would just restate
+yesterday's already-known volume rather than measure today's premarket
+activity. The historical backtest (pattern.py) still applies the volume
+condition properly, since full daily bars are legitimate there.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -60,13 +62,35 @@ def fetch_live_quote(ticker: str) -> LiveQuote:
     return LiveQuote(ticker=ticker, price=float(price), previous_close=float(previous_close))
 
 
-def screen_ticker(ticker: str, pattern: PatternConfig, api_key: str | None = None) -> dict[str, Any]:
+def load_quotes_file(path: str | Path) -> dict[str, LiveQuote]:
+    """Loads a JSON manifest of pre-fetched live quotes:
+    {"AAPL": {"price": 190.1, "previous_close": 188.4}, ...} -- for environments
+    where something else (e.g. a cloud agent with Alpha Vantage MCP access, via
+    GLOBAL_QUOTE) fetched the quotes, since this process can't reach yfinance
+    directly."""
+    with open(path) as f:
+        raw = json.load(f)
+    return {
+        ticker.upper(): LiveQuote(
+            ticker=ticker.upper(), price=float(v["price"]), previous_close=float(v["previous_close"])
+        )
+        for ticker, v in raw.items()
+    }
+
+
+def screen_ticker(
+    ticker: str,
+    pattern: PatternConfig,
+    api_key: str | None = None,
+    data_dir: str | None = None,
+    quotes: dict[str, LiveQuote] | None = None,
+) -> dict[str, Any]:
     """Checks one ticker's current gap % and prior-day RSI against the pattern.
     Returns a result dict; on any data failure, returns {"ticker", "error"}."""
     ticker = ticker.upper().strip()
 
     try:
-        history = get_price_history(ticker, api_key=api_key)
+        history = get_price_history(ticker, api_key=api_key, data_dir=data_dir)
     except DataUnavailable as exc:
         return {"ticker": ticker, "error": str(exc)}
 
@@ -75,7 +99,7 @@ def screen_ticker(ticker: str, pattern: PatternConfig, api_key: str | None = Non
     prior_rsi = float(last["rsi"]) if pd.notna(last["rsi"]) else None
 
     try:
-        quote = fetch_live_quote(ticker)
+        quote = quotes[ticker] if quotes and ticker in quotes else fetch_live_quote(ticker)
     except DataUnavailable as exc:
         return {"ticker": ticker, "error": str(exc)}
 
@@ -99,6 +123,11 @@ def screen_ticker(ticker: str, pattern: PatternConfig, api_key: str | None = Non
 
 
 def screen_candidates(
-    tickers: list[str], pattern: PatternConfig, api_key: str | None = None
+    tickers: list[str],
+    pattern: PatternConfig,
+    api_key: str | None = None,
+    data_dir: str | None = None,
+    quotes_file: str | None = None,
 ) -> list[dict[str, Any]]:
-    return [screen_ticker(t, pattern, api_key=api_key) for t in tickers]
+    quotes = load_quotes_file(quotes_file) if quotes_file else None
+    return [screen_ticker(t, pattern, api_key=api_key, data_dir=data_dir, quotes=quotes) for t in tickers]
