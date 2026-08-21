@@ -20,12 +20,16 @@ import os
 import sys
 from typing import Any
 
+from .catalyst import get_catalyst_context
 from .data import DataUnavailable, get_api_call_count, get_price_history, reset_api_call_count
 from .pattern import PatternConfig, compute_indicators, forward_returns, pool_returns, scan, summarize_horizon
+from .ratelimit import wait_for_slot_persisted
 from .report import (
+    build_catalyst_report,
     build_pool_report,
     build_report,
     build_screen_report,
+    to_catalyst_markdown,
     to_json,
     to_markdown,
     to_pool_markdown,
@@ -35,7 +39,7 @@ from .screener import screen_candidates
 from .universe import DEFAULT_UNIVERSE
 
 API_KEY_ENV_VAR = "ALPHAVANTAGE_API_KEY"
-SUBCOMMANDS = ("backtest", "screen", "pool")
+SUBCOMMANDS = ("backtest", "screen", "pool", "catalyst", "rate-guard")
 
 
 def _parse_tickers(raw: str) -> list[str]:
@@ -123,6 +127,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=10,
         help="Occurrence count below which a horizon's stats are flagged as statistically thin (default 10).",
     )
+    backtest.add_argument(
+        "--catalyst",
+        action="store_true",
+        help="Fetch and prepend raw catalyst material (recent relevant news, or an earnings-date "
+        "check) for each ticker, in its own section before that ticker's technical/pattern data. "
+        "Structured source data only -- it is not a synthesized summary.",
+    )
     _add_data_source_args(backtest)
     _add_output_args(backtest)
 
@@ -171,6 +182,35 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     _add_data_source_args(pool)
     _add_output_args(pool)
+
+    catalyst = subparsers.add_parser(
+        "catalyst",
+        help="Fetch raw catalyst material for tickers (recent relevant news via NEWS_SENTIMENT, "
+        "falling back to an EARNINGS_CALENDAR date check) -- structured source data only, not a "
+        "synthesized summary; pair with --catalyst on backtest to fold this into that report instead.",
+    )
+    catalyst.add_argument(
+        "tickers",
+        nargs="*",
+        help="Tickers to fetch catalyst material for. If omitted, read from stdin (newline- or comma-separated).",
+    )
+    _add_data_source_args(catalyst)
+    _add_output_args(catalyst)
+
+    rate_guard = subparsers.add_parser(
+        "rate-guard",
+        help="Sliding-window rate-limit guard for an external caller (e.g. a cloud-routine agent) "
+        "making Alpha Vantage calls of its own via MCP tools rather than through this CLI: blocks "
+        "until making one more call would not exceed --max-calls within the trailing "
+        "--window-seconds, tracked in --state-file. Call this once immediately before each such call.",
+    )
+    rate_guard.add_argument(
+        "--state-file", required=True, help="Path to a small JSON file tracking recent call timestamps."
+    )
+    rate_guard.add_argument("--max-calls", type=int, default=5, help="Max calls allowed in the window (default 5).")
+    rate_guard.add_argument(
+        "--window-seconds", type=float, default=60.0, help="Trailing window size in seconds (default 60)."
+    )
 
     return parser
 
@@ -328,6 +368,10 @@ def _run_backtest(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         for ticker, role in jobs
     ]
 
+    if args.catalyst:
+        for result in results:
+            result["catalyst"] = get_catalyst_context(result["ticker"], api_key=api_key, data_dir=args.data_dir)
+
     report = build_report(pattern.to_dict(), horizons, args.min_occurrences, results)
     rendered = to_json(report) if args.format == "json" else to_markdown(report)
     _write_output(rendered, args.output)
@@ -401,6 +445,36 @@ def _run_pool(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_catalyst(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    api_key = args.api_key or os.environ.get(API_KEY_ENV_VAR)
+
+    tickers = [t.upper() for t in args.tickers] if args.tickers else _read_stdin_tickers()
+    if not tickers:
+        parser.error(
+            "no tickers given and none piped via stdin. Provide tickers as arguments or "
+            "pipe a newline/comma-separated list, e.g.: echo AAPL,MSFT | premarket-analog catalyst"
+        )
+        return 2
+
+    results = [get_catalyst_context(t, api_key=api_key, data_dir=args.data_dir) for t in tickers]
+    report = build_catalyst_report(results)
+    rendered = to_json(report) if args.format == "json" else to_catalyst_markdown(report)
+    _write_output(rendered, args.output)
+    _print_api_call_count()
+    return 0
+
+
+def _run_rate_guard(args: argparse.Namespace) -> int:
+    slept = wait_for_slot_persisted(args.state_file, max_calls=args.max_calls, window_seconds=args.window_seconds)
+    if slept > 0:
+        print(
+            f"[premarket-analog] rate-guard: slept {slept:.1f}s to stay within "
+            f"{args.max_calls} calls / {args.window_seconds:.0f}s",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def _print_api_call_count() -> None:
     count = get_api_call_count()
     print(f"[premarket-analog] Alpha Vantage API calls this run: {count}", file=sys.stderr)
@@ -425,6 +499,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_screen(parser, args)
     if args.command == "pool":
         return _run_pool(parser, args)
+    if args.command == "catalyst":
+        return _run_catalyst(parser, args)
+    if args.command == "rate-guard":
+        return _run_rate_guard(args)
     return _run_backtest(parser, args)
 
 

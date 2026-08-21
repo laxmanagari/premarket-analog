@@ -14,6 +14,19 @@ Three related tools in one CLI:
   ticker-specificity for sample size — useful when a candidate (e.g. an
   obscure daily gainer) has too little of its own history to say much on its
   own; see **Notes / caveats** for what pooling does and doesn't tell you.
+- **`catalyst`** — fetches raw catalyst material for a ticker: the 2-3 most
+  relevant recent news articles (Alpha Vantage `NEWS_SENTIMENT`), falling
+  back to an earnings-date check (`EARNINGS_CALENDAR`) if nothing relevant
+  turns up. This is structured source data only, not a synthesized
+  narrative — see **Catalyst context** below for why. Pair with `--catalyst`
+  on `backtest` to fold this into that report as its own labeled section per
+  ticker, before the technical/pattern data.
+
+There's also a **`rate-guard`** subcommand: not part of the analysis itself,
+it's a sliding-window rate-limit primitive an external caller (e.g. a
+cloud-routine agent making Alpha Vantage calls of its own via MCP tools,
+outside this CLI's own REST path) can shell out to before each call — see
+**Rate limiting** below.
 
 The intended morning flow is `screen` first (which candidates match live
 today) piped into `backtest` (how has this exact setup played out historically
@@ -64,6 +77,58 @@ history (~100 trading days) through most MCP-connected accounts, so a
 `--data-dir`-driven `backtest` will usually have a short lookback window —
 expect the thin-sample warning to fire routinely there; it's telling the
 truth about the data available, not misbehaving.
+
+### Rate limiting
+
+Alpha Vantage's real free-tier limit is **5 calls/minute, 25 calls/day**.
+Every direct REST call this CLI makes (`TIME_SERIES_DAILY(_ADJUSTED)`,
+`NEWS_SENTIMENT`, `EARNINGS_CALENDAR`) passes through a shared sliding-window
+guard first: before making a call, it checks whether doing so would exceed 5
+calls in the trailing 60 seconds, and if so, sleeps exactly until the oldest
+call in that window ages out (not a blind fixed delay). This is automatic —
+nothing to configure for normal use of `backtest`/`screen`/`pool`/`catalyst`.
+
+For an external caller that makes Alpha Vantage calls of its own outside this
+CLI's Python — e.g. a cloud-routine agent using MCP tools, since a sandboxed
+environment usually can't reach Alpha Vantage's REST API directly (see
+above) — the same algorithm is available as a subcommand:
+
+```bash
+premarket-analog rate-guard --state-file /tmp/av_data/call_log.json
+# then make your own Alpha Vantage call
+```
+
+Call it once immediately before each external Alpha Vantage call, always with
+the same `--state-file`; it tracks recent call timestamps in that file and
+blocks only when needed. Every run also prints its own total call count to
+stderr (`Alpha Vantage API calls this run: N`) so actual usage against the
+25/day cap is easy to see.
+
+### Catalyst context
+
+`premarket-analog catalyst TICKER [TICKER2 ...]` fetches what's likely
+driving a ticker's move: the top (up to 3) relevant recent articles via Alpha
+Vantage's `NEWS_SENTIMENT` (filtered by relevance, sorted, most relevant
+first), or — if nothing sufficiently relevant turns up — a check of
+`EARNINGS_CALENDAR` for whether today is that ticker's reported earnings
+date. If neither turns up anything, it says "no clear catalyst found" rather
+than guessing.
+
+This only fetches and structures source material (title, source, url,
+relevance) — it does **not** write a narrative. Turning "these are the 2-3
+most relevant articles" into an actual 2-3 sentence plain-language paraphrase
+of what's driving the move is a language task, not something deterministic
+code can do; that step is left to whoever consumes this output (a person
+reading it, or an agent orchestrating a run), and every catalyst section
+says so explicitly rather than silently quoting Alpha Vantage's article
+summaries as if they were a synthesized take.
+
+Add `--catalyst` to `backtest` to fold this into that report instead of
+running it standalone: each ticker gets its own `### Catalyst` section,
+using the same fetch, placed before that ticker's technical/pattern-analog
+data. It renders even if the technical fetch for that ticker fails (or vice
+versa) — they're independent data sources, so one failing doesn't hide the
+other's result.
 
 ## Usage
 
@@ -187,3 +252,8 @@ or supply a JSON file via `--pattern-config`:
   the scanned history — it doesn't mean the edge transfers uniformly to any
   one ticker today. The report says this explicitly and lists how many
   distinct tickers contributed to each horizon's count.
+- `catalyst`'s coverage depends entirely on Alpha Vantage's own news indexing
+  — thin or delayed for smaller/obscure tickers (exactly the ones a daily
+  gainers list tends to surface). "No clear catalyst found" means nothing
+  sufficiently relevant was indexed at the time of the call, not that
+  nothing happened.

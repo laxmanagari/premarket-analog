@@ -86,6 +86,48 @@ def test_scan_ticker_for_pool_returns_error_on_missing_data(monkeypatch):
     assert error == "no data"
 
 
+def test_catalyst_subcommand_parses_tickers():
+    parser = build_arg_parser()
+    args = parser.parse_args(["catalyst", "AAPL", "MSFT"])
+    assert args.command == "catalyst"
+    assert args.tickers == ["AAPL", "MSFT"]
+
+
+def test_rate_guard_subcommand_requires_state_file():
+    parser = build_arg_parser()
+    args = parser.parse_args(["rate-guard", "--state-file", "/tmp/calls.json"])
+    assert args.command == "rate-guard"
+    assert args.state_file == "/tmp/calls.json"
+    assert args.max_calls == 5
+    assert args.window_seconds == 60.0
+
+
+def test_rate_guard_subcommand_accepts_overrides():
+    parser = build_arg_parser()
+    args = parser.parse_args(
+        ["rate-guard", "--state-file", "/tmp/calls.json", "--max-calls", "3", "--window-seconds", "30"]
+    )
+    assert args.max_calls == 3
+    assert args.window_seconds == 30.0
+
+
+def test_backtest_catalyst_flag_defaults_false():
+    parser = build_arg_parser()
+    args = parser.parse_args(["backtest", "AAPL"])
+    assert args.catalyst is False
+
+
+def test_backtest_catalyst_flag_parses_true():
+    parser = build_arg_parser()
+    args = parser.parse_args(["backtest", "AAPL", "--catalyst"])
+    assert args.catalyst is True
+
+
+def test_normalize_argv_leaves_catalyst_and_rate_guard_alone():
+    assert _normalize_argv(["catalyst", "AAPL"]) == ["catalyst", "AAPL"]
+    assert _normalize_argv(["rate-guard", "--state-file", "x"]) == ["rate-guard", "--state-file", "x"]
+
+
 def test_scan_ticker_for_pool_returns_data_on_success(monkeypatch):
     import premarket_analog.cli as cli_module
 

@@ -3,10 +3,40 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from .screener import VOLUME_UNAVAILABLE_NOTE
+
+CATALYST_DISCLAIMER = "Raw source material above -- paraphrase into your own catalyst summary, don't quote directly."
+
+
+def _article_dict(article: Any) -> dict[str, Any]:
+    return asdict(article) if is_dataclass(article) else article
+
+
+def _render_catalyst_body(catalyst: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    if catalyst.get("error"):
+        lines.append(f"*Could not fetch catalyst data: {catalyst['error']}*")
+        lines.append("")
+        return lines
+
+    articles = [_article_dict(a) for a in (catalyst.get("articles") or [])]
+    if articles:
+        for a in articles:
+            lines.append(f"- **{a['title']}** — {a['source']} (relevance {a['relevance_score']:.2f}) — {a['url']}")
+        lines.append("")
+        lines.append(f"*{CATALYST_DISCLAIMER}*")
+    elif catalyst.get("earnings"):
+        e = catalyst["earnings"]
+        estimate = e.get("estimate", "n/a")
+        lines.append(f"- No relevant news, but today matches an earnings report date (est. EPS: {estimate}).")
+    else:
+        lines.append("- No clear catalyst found.")
+    lines.append("")
+    return lines
 
 
 def build_report(
@@ -125,6 +155,11 @@ def _render_ticker_section(entry: dict[str, Any], min_occurrences: int) -> list[
     header = f"## {entry['ticker']}" + (f" ({role_label})" if role_label else "")
     lines.append(header)
     lines.append("")
+
+    if entry.get("catalyst"):
+        lines.append("### Catalyst")
+        lines.append("")
+        lines.extend(_render_catalyst_body(entry["catalyst"]))
 
     if entry.get("error"):
         lines.append(f"**Error:** {entry['error']}")
@@ -339,4 +374,27 @@ def to_pool_markdown(report: dict[str, Any], pooled_returns: dict[int, list[dict
         "it does not mean the edge transfers uniformly to any one ticker today."
     )
 
+    return "\n".join(lines)
+
+
+def build_catalyst_report(results: list[dict[str, Any]]) -> dict[str, Any]:
+    serializable = []
+    for r in results:
+        entry: dict[str, Any] = {"ticker": r["ticker"]}
+        if r.get("error"):
+            entry["error"] = r["error"]
+        else:
+            entry["note"] = r["note"]
+            entry["articles"] = [_article_dict(a) for a in (r.get("articles") or [])]
+            entry["earnings"] = r.get("earnings")
+        serializable.append(entry)
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "results": serializable}
+
+
+def to_catalyst_markdown(report: dict[str, Any]) -> str:
+    lines: list[str] = ["# Catalyst Context", "", f"Generated: {report['generated_at']}", ""]
+    for entry in report["results"]:
+        lines.append(f"## {entry['ticker']}")
+        lines.append("")
+        lines.extend(_render_catalyst_body(entry))
     return "\n".join(lines)

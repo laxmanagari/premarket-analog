@@ -16,6 +16,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from .ratelimit import wait_for_slot
+
 ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
 
 REQUIRED_COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -50,6 +52,13 @@ def get_api_call_count() -> int:
 def reset_api_call_count() -> None:
     global _api_call_count
     _api_call_count = 0
+
+
+def _increment_api_call_count() -> None:
+    """Shared counter increment for any real Alpha Vantage REST call this
+    package makes, including from catalyst.py (news/earnings lookups)."""
+    global _api_call_count
+    _api_call_count += 1
 
 
 def _dataframe_from_daily_series(raw: dict) -> pd.DataFrame:
@@ -109,8 +118,9 @@ def _fetch_alpha_vantage(ticker: str, api_key: str) -> pd.DataFrame:
         "outputsize": "full",
         "apikey": api_key,
     }
+    wait_for_slot()  # sliding-window guard: never exceed 5 calls in a trailing 60s
     resp = requests.get(ALPHA_VANTAGE_URL, params=params, timeout=30)
-    _api_call_count += 1  # count the request itself, even if AV returns an error payload
+    _increment_api_call_count()  # count the request itself, even if AV returns an error payload
     resp.raise_for_status()
     return _parse_alpha_vantage_payload(resp.json())
 
